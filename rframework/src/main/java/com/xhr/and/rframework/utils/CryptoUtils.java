@@ -1,298 +1,770 @@
 package com.xhr.and.rframework.utils;
 
+import android.text.TextUtils;
+import android.util.Log;
+
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Field;
 import java.security.Key;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.Signature;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
+import javax.crypto.KeyGenerator;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * 加密、解密、摘要算法
- *
- * State：未完成
- *
+ * 1、RSA加密、解密和签名验证
+ * 2、AES字符串和文件加解密
+ * 3、摘要算法MD5、SHA系列
+ * <p/>
+ * State：完成
+ * <p/>
  * Created by xhrong on 2016/11/8.
  */
 public class CryptoUtils {
 
+    //读SD中的文件
+    private static String readFile(File file) {
+        String res = "";
+        try {
+            FileInputStream fin = new FileInputStream(file);
+
+            int length = fin.available();
+
+            byte[] buffer = new byte[length];
+            fin.read(buffer);
+
+            res = new String(buffer, "UTF-8");
+
+            fin.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return res;
+    }
+
     /**
-     * RSA非对称加密算法。用法：1公钥加密(C)，私钥解密(S)；2私钥加密(S)，公钥解密(C)。
+     * RSA公钥/私钥/签名工具
+     * <p/>
+     * 字符串格式的密钥在未在特殊说明情况下都为BASE64编码格式<br/>
+     * 由于非对称加密速度极其缓慢，一般文件不使用它来加密而是使用对称加密，<br/>
+     * 非对称加密算法可以用来对对称加密的密钥加密，这样保证密钥的安全也就保证了数据的安全
      */
     public static class RSAHelper {
 
-        /**
-         * 指定加密算法为RSA
-         */
-        private static String ALGORITHM = "RSA";
+        public static final String RSA = "RSA";// 非对称加密密钥算法
+        public static final String ECB_PKCS1_PADDING = "RSA/ECB/PKCS1PADDING";//加密填充方式
+        public static int KEY_SIZE = 2048;//秘钥默认长度
+        public static final byte[] DEFAULT_SPLIT = "#PART#".getBytes();    // 当要加密的内容超过bufferSize，则采用partSplit进行分块加密
+        public static int BUFFER_SIZE = (KEY_SIZE / 8) - 11;// 当前秘钥支持加密的最大字节数
+        public static final String SIGNATURE_ALGORITHM = "MD5withRSA";//签名算法
 
         /**
-         * 指定key的大小
-         */
-        private static int KEYSIZE = 1024;
-
-        /**
-         * 指定公钥存放文件
-         */
-        private static String PUBLIC_KEY_FILE = "PublicKey";
-
-        /**
-         * 指定私钥存放文件
-         */
-        private static String PRIVATE_KEY_FILE = "PrivateKey";
-
-
-        /**
-         * 生成密钥对
-         */
-        private static void generateKeyPair() throws Exception {
-            /** RSA算法要求有一个可信任的随机数源 */
-            SecureRandom sr = new SecureRandom();
-            /** 为RSA算法创建一个KeyPairGenerator对象 */
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance(ALGORITHM);
-            /** 利用上面的随机数据源初始化这个KeyPairGenerator对象 */
-            kpg.initialize(KEYSIZE, sr);
-            /** 生成密匙对 */
-            KeyPair kp = kpg.generateKeyPair();
-            /** 得到公钥 */
-            Key publicKey = kp.getPublic();
-            /** 得到私钥 */
-            Key privateKey = kp.getPrivate();
-            /** 用对象流将生成的密钥写入文件 */
-            ObjectOutputStream oos1 = new ObjectOutputStream(new FileOutputStream(PUBLIC_KEY_FILE));
-            ObjectOutputStream oos2 = new ObjectOutputStream(new FileOutputStream(PRIVATE_KEY_FILE));
-            oos1.writeObject(publicKey);
-            oos2.writeObject(privateKey);
-            /** 清空缓存，关闭文件输出流 */
-            oos1.close();
-            oos2.close();
+         * 设置KeySize。KeySize不同，能够加解密的字符串长度是不同的。
+         *
+         * @param keySize 密钥长度，范围：512～2048。一般1024
+         **/
+        public static void setKeySize(int keySize) {
+            KEY_SIZE = keySize;
+            BUFFER_SIZE = (KEY_SIZE / 8) - 11;
         }
 
         /**
-         * 加密方法 source： 源数据
+         * 生成RSA密钥对
+         *
+         * @return
          */
-        public static String encrypt(String source) throws Exception {
-            /** 将文件中的公钥对象读出 */
-            ObjectInputStream ois = new ObjectInputStream(new FileInputStream(PUBLIC_KEY_FILE));
-            Key key = (Key) ois.readObject();
-            ois.close();
-            /** 得到Cipher对象来实现对源数据的RSA加密 */
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.ENCRYPT_MODE, key);
-            byte[] b = source.getBytes();
-            /** 执行加密操作 */
-            byte[] b1 = cipher.doFinal(b);
-            return Base64.encode(b1);
+
+        public static KeyPair generateKeyPair() {
+            return generateKeyPair(null, null);
         }
 
         /**
-         * 解密算法 cryptograph:密文
+         * 随机生成RSA密钥对，并保存的指定文件。不建议使用。建议生成后，自行保存
+         *
+         * @param publicKeyFile  公钥保存路径
+         * @param privateKeyFile 私钥保存路径
+         * @return
          */
-        public static String decrypt(String cryptograph) throws Exception {
-            /** 将文件中的私钥对象读出 */
-            ObjectInputStream ois = new ObjectInputStream(new FileInputStream(PRIVATE_KEY_FILE));
-            Key key = (Key) ois.readObject();
-            ois.close();
-            /** 得到Cipher对象对已用公钥加密的数据进行RSA解密 */
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.DECRYPT_MODE, key);
-            byte[] b1 = Base64.decode(cryptograph);
-            /** 执行解密操作 */
-            byte[] b = cipher.doFinal(b1);
-            return new String(b);
+        @Deprecated
+        public static KeyPair generateKeyPair(String publicKeyFile, String privateKeyFile) {
+            try {
+                /** RSA算法要求有一个可信任的随机数源 */
+                SecureRandom sr = new SecureRandom();
+                /** 为RSA算法创建一个KeyPairGenerator对象 */
+                KeyPairGenerator kpg = KeyPairGenerator.getInstance(RSA);
+                /** 利用上面的随机数据源初始化这个KeyPairGenerator对象 */
+                kpg.initialize(KEY_SIZE, sr);
+
+                //将密钥写入文件
+                if ((privateKeyFile != null && !privateKeyFile.equals("")) && (publicKeyFile != null && !publicKeyFile.equals(""))) {
+                    FileOutputStream oos1 = null;
+                    FileOutputStream oos2 = null;
+                    try {
+                        /** 生成密匙对 */
+                        KeyPair kp = kpg.generateKeyPair();
+                        /** 得到公钥 */
+                        Key publicKey = kp.getPublic();
+                        /** 得到私钥 */
+                        Key privateKey = kp.getPrivate();
+                        /** 用对象流将生成的密钥写入文件 */
+                        oos1 = new FileOutputStream(publicKeyFile);
+                        oos2 = new FileOutputStream(privateKeyFile);
+                        oos1.write(Base64.encode(publicKey.getEncoded()).getBytes());
+                        oos2.write(Base64.encode(privateKey.getEncoded()).getBytes());
+
+                    } catch (Exception e) {
+                        e.printStackTrace();
+
+                    } finally {
+                        /** 清空缓存，关闭文件输出流 */
+                        if (oos1 != null) oos1.close();
+                        if (oos2 != null) oos2.close();
+                    }
+                }
+                return kpg.genKeyPair();
+            } catch (Exception e) {
+                e.printStackTrace();
+                return null;
+            }
         }
 
+        /**
+         * 从字符串中加载公钥
+         *
+         * @param publicKeyStr 公钥数据字符串
+         */
+        public static PublicKey loadPublicKey(String publicKeyStr) {
+            try {
+                byte[] buffer = Base64.decode(publicKeyStr);
+                KeyFactory keyFactory = KeyFactory.getInstance(RSA);
+                X509EncodedKeySpec keySpec = new X509EncodedKeySpec(buffer);
+                return keyFactory.generatePublic(keySpec);
+            } catch (Exception e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
+
+        /**
+         * 从文件加载公钥
+         *
+         * @param publicKeyFile 公钥文件
+         * @return
+         */
+        public static PublicKey loadPublicKeyForFile(String publicKeyFile) {
+            File file = new File(publicKeyFile);
+            if (!file.exists()) return null;
+
+            String publicKeyStr = CryptoUtils.readFile(file);
+            if (publicKeyStr == null || publicKeyStr.equals("")) return null;
+            return loadPublicKey(publicKeyStr);
+        }
+
+        /**
+         * 从字符串中加载私钥<br>
+         * 加载时使用的是PKCS8EncodedKeySpec（PKCS#8编码的Key指令）。
+         *
+         * @param privateKeyStr
+         * @return
+         */
+        public static PrivateKey loadPrivateKey(String privateKeyStr) {
+            try {
+                byte[] buffer = Base64.decode(privateKeyStr);
+                PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(buffer);
+                KeyFactory keyFactory = KeyFactory.getInstance(RSA);
+                return keyFactory.generatePrivate(keySpec);
+            } catch (Exception e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
+
+        /**
+         * 从文件加载私钥
+         *
+         * @param privateKeyFile 私钥文件
+         * @return
+         */
+        public static PrivateKey loadPrivateKeyForFile(String privateKeyFile) {
+            File file = new File(privateKeyFile);
+            if (!file.exists()) return null;
+
+            String privateKeyStr = CryptoUtils.readFile(file);
+            if (privateKeyStr == null || privateKeyStr.equals("")) return null;
+            return loadPrivateKey(privateKeyStr);
+        }
+
+
+        /**
+         * 用私钥对信息生成数字签名
+         *
+         * @param data       已加密数据
+         * @param privateKey 私钥
+         * @return
+         * @throws Exception
+         */
+        public static String sign(byte[] data, PrivateKey privateKey) throws Exception {
+            Signature signature = Signature.getInstance(SIGNATURE_ALGORITHM);
+            signature.initSign(privateKey);
+            signature.update(data);
+            return Base64.encode(signature.sign());
+        }
+
+        /**
+         * 校验数字签名
+         *
+         * @param data      已加密数据
+         * @param publicKey 公钥(BASE64编码)
+         * @param sign      数字签名
+         * @return
+         * @throws Exception
+         */
+        public static boolean verify(byte[] data, PublicKey publicKey, String sign)
+                throws Exception {
+            Signature signature = Signature.getInstance(SIGNATURE_ALGORITHM);
+            signature.initVerify(publicKey);
+            signature.update(data);
+            return signature.verify(Base64.decode(sign));
+        }
+
+
+        /**
+         * 公钥分段加密
+         *
+         * @param data      要加密的原始数据
+         * @param publicKey 公钥
+         */
+        public static byte[] encryptWithPublicKey(byte[] data, PublicKey publicKey) throws Exception {
+            int dataLen = data.length;
+            if (dataLen <= BUFFER_SIZE) {
+                return encryptByPublicKey(data, publicKey);
+            }
+            List<Byte> allBytes = new ArrayList<Byte>(2048);
+            int bufIndex = 0;
+            int subDataLoop = 0;
+            byte[] buf = new byte[BUFFER_SIZE];
+            for (int i = 0; i < dataLen; i++) {
+                buf[bufIndex] = data[i];
+                if (++bufIndex == BUFFER_SIZE || i == dataLen - 1) {
+                    subDataLoop++;
+                    if (subDataLoop != 1) {
+                        for (byte b : DEFAULT_SPLIT) {
+                            allBytes.add(b);
+                        }
+                    }
+                    byte[] encryptBytes = encryptByPublicKey(buf, publicKey);
+                    for (byte b : encryptBytes) {
+                        allBytes.add(b);
+                    }
+                    bufIndex = 0;
+                    if (i == dataLen - 1) {
+                        buf = null;
+                    } else {
+                        buf = new byte[Math.min(BUFFER_SIZE, dataLen - i - 1)];
+                    }
+                }
+            }
+            byte[] bytes = new byte[allBytes.size()];
+            {
+                int i = 0;
+                for (Byte b : allBytes) {
+                    bytes[i++] = b.byteValue();
+                }
+            }
+            return bytes;
+        }
+
+
+        /**
+         * 私钥分段加密
+         *
+         * @param data       要加密的原始数据
+         * @param privateKey 私钥
+         */
+        public static byte[] encryptWithPrivateKey(byte[] data, PrivateKey privateKey) throws Exception {
+            int dataLen = data.length;
+            if (dataLen <= BUFFER_SIZE) {
+                return encryptByPrivateKey(data, privateKey);
+            }
+            List<Byte> allBytes = new ArrayList<Byte>(2048);
+            int bufIndex = 0;
+            int subDataLoop = 0;
+            byte[] buf = new byte[BUFFER_SIZE];
+            for (int i = 0; i < dataLen; i++) {
+                buf[bufIndex] = data[i];
+                if (++bufIndex == BUFFER_SIZE || i == dataLen - 1) {
+                    subDataLoop++;
+                    if (subDataLoop != 1) {
+                        for (byte b : DEFAULT_SPLIT) {
+                            allBytes.add(b);
+                        }
+                    }
+                    byte[] encryptBytes = encryptByPrivateKey(buf, privateKey);
+                    for (byte b : encryptBytes) {
+                        allBytes.add(b);
+                    }
+                    bufIndex = 0;
+                    if (i == dataLen - 1) {
+                        buf = null;
+                    } else {
+                        buf = new byte[Math.min(BUFFER_SIZE, dataLen - i - 1)];
+                    }
+                }
+            }
+            byte[] bytes = new byte[allBytes.size()];
+            {
+                int i = 0;
+                for (Byte b : allBytes) {
+                    bytes[i++] = b.byteValue();
+                }
+            }
+            return bytes;
+        }
+
+
+        /**
+         * 公钥分段解密
+         *
+         * @param encrypted 待解密数据
+         * @param publicKey 公钥
+         */
+        public static byte[] decryptWithPublicKey(byte[] encrypted, PublicKey publicKey) throws Exception {
+            int splitLen = DEFAULT_SPLIT.length;
+            if (splitLen <= 0) {
+                return decryptByPublicKey(encrypted, publicKey);
+            }
+            int dataLen = encrypted.length;
+            List<Byte> allBytes = new ArrayList<Byte>(1024);
+            int latestStartIndex = 0;
+            for (int i = 0; i < dataLen; i++) {
+                byte bt = encrypted[i];
+                boolean isMatchSplit = false;
+                if (i == dataLen - 1) {
+                    // 到data的最后了
+                    byte[] part = new byte[dataLen - latestStartIndex];
+                    System.arraycopy(encrypted, latestStartIndex, part, 0, part.length);
+                    byte[] decryptPart = decryptByPublicKey(part, publicKey);
+                    for (byte b : decryptPart) {
+                        allBytes.add(b);
+                    }
+                    latestStartIndex = i + splitLen;
+                    i = latestStartIndex - 1;
+                } else if (bt == DEFAULT_SPLIT[0]) {
+                    // 这个是以split[0]开头
+                    if (splitLen > 1) {
+                        if (i + splitLen < dataLen) {
+                            // 没有超出data的范围
+                            for (int j = 1; j < splitLen; j++) {
+                                if (DEFAULT_SPLIT[j] != encrypted[i + j]) {
+                                    break;
+                                }
+                                if (j == splitLen - 1) {
+                                    // 验证到split的最后一位，都没有break，则表明已经确认是split段
+                                    isMatchSplit = true;
+                                }
+                            }
+                        }
+                    } else {
+                        // split只有一位，则已经匹配了
+                        isMatchSplit = true;
+                    }
+                }
+                if (isMatchSplit) {
+                    byte[] part = new byte[i - latestStartIndex];
+                    System.arraycopy(encrypted, latestStartIndex, part, 0, part.length);
+                    byte[] decryptPart = decryptByPublicKey(part, publicKey);
+                    for (byte b : decryptPart) {
+                        allBytes.add(b);
+                    }
+                    latestStartIndex = i + splitLen;
+                    i = latestStartIndex - 1;
+                }
+            }
+            byte[] bytes = new byte[allBytes.size()];
+            {
+                int i = 0;
+                for (Byte b : allBytes) {
+                    bytes[i++] = b.byteValue();
+                }
+            }
+            return bytes;
+        }
+
+        /**
+         * 私钥分段解密
+         *
+         * @param encrypted  待解密数据
+         * @param privateKey 私钥
+         */
+        public static byte[] decryptWithPrivateKey(byte[] encrypted, PrivateKey privateKey) throws Exception {
+            int splitLen = DEFAULT_SPLIT.length;
+            if (splitLen <= 0) {
+                return decryptByPrivateKey(encrypted, privateKey);
+            }
+            int dataLen = encrypted.length;
+            List<Byte> allBytes = new ArrayList<Byte>(1024);
+            int latestStartIndex = 0;
+            for (int i = 0; i < dataLen; i++) {
+                byte bt = encrypted[i];
+                boolean isMatchSplit = false;
+                if (i == dataLen - 1) {
+                    // 到data的最后了
+                    byte[] part = new byte[dataLen - latestStartIndex];
+                    System.arraycopy(encrypted, latestStartIndex, part, 0, part.length);
+                    byte[] decryptPart = decryptByPrivateKey(part, privateKey);
+                    for (byte b : decryptPart) {
+                        allBytes.add(b);
+                    }
+                    latestStartIndex = i + splitLen;
+                    i = latestStartIndex - 1;
+                } else if (bt == DEFAULT_SPLIT[0]) {
+                    // 这个是以split[0]开头
+                    if (splitLen > 1) {
+                        if (i + splitLen < dataLen) {
+                            // 没有超出data的范围
+                            for (int j = 1; j < splitLen; j++) {
+                                if (DEFAULT_SPLIT[j] != encrypted[i + j]) {
+                                    break;
+                                }
+                                if (j == splitLen - 1) {
+                                    // 验证到split的最后一位，都没有break，则表明已经确认是split段
+                                    isMatchSplit = true;
+                                }
+                            }
+                        }
+                    } else {
+                        // split只有一位，则已经匹配了
+                        isMatchSplit = true;
+                    }
+                }
+                if (isMatchSplit) {
+                    byte[] part = new byte[i - latestStartIndex];
+                    System.arraycopy(encrypted, latestStartIndex, part, 0, part.length);
+                    byte[] decryptPart = decryptByPrivateKey(part, privateKey);
+                    for (byte b : decryptPart) {
+                        allBytes.add(b);
+                    }
+                    latestStartIndex = i + splitLen;
+                    i = latestStartIndex - 1;
+                }
+            }
+            byte[] bytes = new byte[allBytes.size()];
+            {
+                int i = 0;
+                for (Byte b : allBytes) {
+                    bytes[i++] = b.byteValue();
+                }
+            }
+            return bytes;
+        }
+
+        /**
+         * 用公钥对字符串进行加密
+         *
+         * @param data 原文
+         */
+        private static byte[] encryptByPublicKey(byte[] data, PublicKey publicKey) throws Exception {
+            // 加密数据
+            Cipher cp = Cipher.getInstance(ECB_PKCS1_PADDING);
+            cp.init(Cipher.ENCRYPT_MODE, publicKey);
+            return cp.doFinal(data);
+        }
+
+        /**
+         * 私钥加密
+         *
+         * @param data       待加密数据
+         * @param privateKey 密钥
+         * @return byte[] 加密数据
+         */
+        private static byte[] encryptByPrivateKey(byte[] data, PrivateKey privateKey) throws Exception {
+            // 数据加密
+            Cipher cipher = Cipher.getInstance(ECB_PKCS1_PADDING);
+            cipher.init(Cipher.ENCRYPT_MODE, privateKey);
+            return cipher.doFinal(data);
+        }
+
+        /**
+         * 公钥解密
+         *
+         * @param data      待解密数据
+         * @param publicKey 密钥
+         * @return byte[] 解密数据
+         */
+        private static byte[] decryptByPublicKey(byte[] data, PublicKey publicKey) throws Exception {
+            // 数据解密
+            Cipher cipher = Cipher.getInstance(ECB_PKCS1_PADDING);
+            cipher.init(Cipher.DECRYPT_MODE, publicKey);
+            return cipher.doFinal(data);
+        }
+
+        /**
+         * 使用私钥进行解密
+         */
+        private static byte[] decryptByPrivateKey(byte[] encrypted, PrivateKey privateKey) throws Exception {
+            // 解密数据
+            Cipher cp = Cipher.getInstance(ECB_PKCS1_PADDING);
+            cp.init(Cipher.DECRYPT_MODE, privateKey);
+            byte[] arr = cp.doFinal(encrypted);
+            return arr;
+        }
     }
+
 
     /**
-     * 3DES加解密
-     *
-     * @author steven-pan
+     * AES加解密工具。AES用来取代DES加密算法
      */
-    public static class DESedeHelper {
-
-        private static final String ALGORITHM_MD5 = "md5";
-
-        private static final String ALGORITHM_DESEDE = "DESede";
-
-        private static final String CIPHER_TRANSFORMATION = "DESede/CBC/PKCS5Padding";
-
-        private static final String CHARSET_UTF_8 = "UTF-8";
-
-
-        /**
-         * encoded message
-         *
-         * @param message origin message
-         * @param sKey    origin privateKey
-         * @return
-         * @throws Exception
-         */
-        public static byte[] encrypt(String message, String sKey) throws Exception {
-            final byte[] keyBytes = getKeyBytes(sKey);
-
-            final SecretKey key = new SecretKeySpec(keyBytes, ALGORITHM_DESEDE);
-            final IvParameterSpec iv = new IvParameterSpec(new byte[8]);
-            final Cipher cipher = Cipher.getInstance(CIPHER_TRANSFORMATION);
-            cipher.init(Cipher.ENCRYPT_MODE, key, iv);
-
-            final byte[] plainTextBytes = message.getBytes(CHARSET_UTF_8);
-            final byte[] cipherText = cipher.doFinal(plainTextBytes);
-
-            return cipherText;
-        }
-
-        /**
-         * decode from encoded message
-         *
-         * @param message encoded message
-         * @param sKey    origin privateKey
-         * @return
-         * @throws Exception
-         */
-        public static String decrypt(byte[] message, String sKey) throws Exception {
-            final byte[] keyBytes = getKeyBytes(sKey);
-
-            final SecretKey key = new SecretKeySpec(keyBytes, ALGORITHM_DESEDE);
-            final IvParameterSpec iv = new IvParameterSpec(new byte[8]);
-            final Cipher decipher = Cipher.getInstance(CIPHER_TRANSFORMATION);
-            decipher.init(Cipher.DECRYPT_MODE, key, iv);
-
-            final byte[] plainText = decipher.doFinal(message);
-            return new String(plainText, CHARSET_UTF_8);
-        }
-
-        /**
-         * generate keyBytes
-         *
-         * @param sKey origin privateKey
-         * @return
-         * @throws Exception
-         */
-        private static byte[] getKeyBytes(String sKey) throws Exception {
-            final MessageDigest md = MessageDigest.getInstance(ALGORITHM_MD5);
-            final byte[] digestOfPassword = md.digest(sKey.getBytes(CHARSET_UTF_8));
-            final byte[] keyBytes = Arrays.copyOf(digestOfPassword, 24);
-            for (int j = 0, k = 16; j < 8; ) {
-                keyBytes[k++] = keyBytes[j++];
-            }
-            return keyBytes;
-        }
-    }
-
-
     public static class AESHelper {
 
-        private static Cipher cipher = null; // 私鈅加密对象Cipher
+        private static final String CBC_PKCS5_PADDING = "AES/CBC/PKCS5Padding";//AES是加密方式 CBC是工作模式 PKCS5Padding是填充模式
+        private static final String AES = "AES";//AES 加密
+        private static final String SHA1PRNG = "SHA1PRNG";//// SHA1PRNG 强随机种子算法, 要区别4.2以上版本的调用方法
 
-        static {
-            try {
-                cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
-            } catch (NoSuchAlgorithmException e) {
-                e.printStackTrace();
-            } catch (NoSuchPaddingException e) {
-                e.printStackTrace();
-            }
-        }
 
         /**
-         * 加密
+         * 生成随机数，可以当做动态的密钥 加密和解密的密钥必须一致，不然将不能解密
          *
-         * @param message
          * @return
          */
-        public static byte[] encrypt(String message, String passWord) {
+        public static String generateKey() {
             try {
-            /* AES算法 */
-                SecretKey secretKey = new SecretKeySpec(passWord.getBytes(), "AES");// 获得密钥
-            /* 获得一个私鈅加密类Cipher，DESede-》AES算法，ECB是加密模式，PKCS5Padding是填充方式 */
-                cipher.init(Cipher.ENCRYPT_MODE, secretKey); // 设置工作模式为加密模式，给出密钥
-                byte[] resultBytes = cipher.doFinal(message.getBytes("UTF-8")); // 正式执行加密操作
-                return resultBytes;
+                SecureRandom localSecureRandom = SecureRandom.getInstance(SHA1PRNG);
+                byte[] bytes_key = new byte[20];
+                localSecureRandom.nextBytes(bytes_key);
+                String str_key = Hex.encode(bytes_key);
+                return str_key;
             } catch (Exception e) {
                 e.printStackTrace();
             }
             return null;
         }
 
+        // 对密钥进行处理
+        private static byte[] getRawKey(byte[] seed) throws Exception {
+            KeyGenerator kgen = KeyGenerator.getInstance(AES);
+            //for android
+            SecureRandom sr = null;
+            // 在4.2以上版本中，SecureRandom获取方式发生了改变
+            if (android.os.Build.VERSION.SDK_INT >= 17) {
+                sr = SecureRandom.getInstance(SHA1PRNG, "Crypto");
+            } else {
+                sr = SecureRandom.getInstance(SHA1PRNG);
+            }
+            // for Java
+            // secureRandom = SecureRandom.getInstance(SHA1PRNG);
+            sr.setSeed(seed);
+            kgen.init(128, sr); //256 bits or 128 bits,192bits
+            //AES中128位密钥版本有10个加密循环，192比特密钥版本有12个加密循环，256比特密钥版本则有14个加密循环。
+            SecretKey skey = kgen.generateKey();
+            byte[] raw = skey.getEncoded();
+            return raw;
+        }
+
+
         /**
-         * 解密
+         * 加密
          *
-         * @param messageBytes
+         * @param key  密钥
+         * @param data 数据
          * @return
-         * @throws Exception
          */
-        public static String decrypt(byte[] messageBytes, String passWord) {
-            String result = "";
+        public static String encrypt(String key, String data) {
+            if (data == null || data.equals("")) {
+                return data;
+            }
             try {
-            /* AES算法 */
-                SecretKey secretKey = new SecretKeySpec(passWord.getBytes(), "AES");// 获得密钥
-                cipher.init(Cipher.DECRYPT_MODE, secretKey); // 设置工作模式为解密模式，给出密钥
-                byte[] resultBytes = cipher.doFinal(messageBytes);// 正式执行解密操作
-                result = new String(resultBytes, "UTF-8");
+                byte[] result = encrypt(key, data.getBytes("UTF-8"));
+                return Base64.encode(result);
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            return result;
+            return null;
+        }
+
+        private static byte[] encrypt(String key, byte[] clear) throws Exception {
+            byte[] raw = getRawKey(key.getBytes());
+            SecretKeySpec skeySpec = new SecretKeySpec(raw, AES);
+            Cipher cipher = Cipher.getInstance(CBC_PKCS5_PADDING);
+            cipher.init(Cipher.ENCRYPT_MODE, skeySpec, new IvParameterSpec(new byte[cipher.getBlockSize()]));
+            byte[] encrypted = cipher.doFinal(clear);
+            return encrypted;
         }
 
         /**
-         * 去掉加密字符串换行符
+         * 解密
          *
-         * @param str
+         * @param key       密钥
+         * @param encrypted 加密后的数据
          * @return
          */
-        public static String filter(String str) {
-            String output = "";
-            StringBuffer sb = new StringBuffer();
-            for (int i = 0; i < str.length(); i++) {
-                int asc = str.charAt(i);
-                if (asc != 10 && asc != 13) {
-                    sb.append(str.subSequence(i, i + 1));
-                }
+        public static String decrypt(String key, String encrypted) {
+            if (encrypted == null || encrypted.equals("")) {
+                return encrypted;
             }
-            output = new String(sb);
-            return output;
+            try {
+                byte[] enc = Base64.decode(encrypted);
+                byte[] result = decrypt(key, enc);
+                return new String(result, "UTF-8");
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            return null;
         }
 
+        private static byte[] decrypt(String key, byte[] encrypted) throws Exception {
+            byte[] raw = getRawKey(key.getBytes());
+            SecretKeySpec skeySpec = new SecretKeySpec(raw, AES);
+            Cipher cipher = Cipher.getInstance(CBC_PKCS5_PADDING);
+            cipher.init(Cipher.DECRYPT_MODE, skeySpec, new IvParameterSpec(new byte[cipher.getBlockSize()]));
+            byte[] decrypted = cipher.doFinal(encrypted);
+            return decrypted;
+        }
+
+
+        /**
+         * 对文件进行AES加密
+         *
+         * @param sourceFile
+         * @param encrypFile
+         * @param key
+         */
+        public static void encryptFile(File sourceFile, File encrypFile, String key) {
+            //新建临时加密文件
+            InputStream inputStream = null;
+            OutputStream outputStream = null;
+            try {
+                inputStream = new FileInputStream(sourceFile);
+                outputStream = new FileOutputStream(encrypFile);
+                byte[] raw = getRawKey(key.getBytes());
+                SecretKeySpec skeySpec = new SecretKeySpec(raw, AES);
+                Cipher cipher = Cipher.getInstance(CBC_PKCS5_PADDING);
+                cipher.init(Cipher.ENCRYPT_MODE, skeySpec, new IvParameterSpec(new byte[cipher.getBlockSize()]));
+
+                //以加密流写入文件
+                CipherInputStream cipherInputStream = new CipherInputStream(inputStream, cipher);
+                byte[] cache = new byte[1024];
+                int nRead = 0;
+                while ((nRead = cipherInputStream.read(cache)) != -1) {
+                    outputStream.write(cache, 0, nRead);
+                    outputStream.flush();
+                }
+                cipherInputStream.close();
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
+            } catch (Exception e) {
+                e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
+            } finally {
+                try {
+                    inputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
+                }
+                try {
+                    outputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
+                }
+            }
+        }
+
+        /**
+         * AES方式解密文件
+         *
+         * @param encryptedFile
+         * @param outFile
+         * @param key
+         */
+        public static void decryptFile(File encryptedFile, File outFile, String key) {
+            //  File decryptFile = null;
+            InputStream inputStream = null;
+            OutputStream outputStream = null;
+            try {
+                //decryptFile = File.createTempFile(encryptedFile.getName(),fileType);
+
+                inputStream = new FileInputStream(encryptedFile);
+                outputStream = new FileOutputStream(outFile);
+
+                byte[] raw = getRawKey(key.getBytes());
+                SecretKeySpec skeySpec = new SecretKeySpec(raw, AES);
+                Cipher cipher = Cipher.getInstance(CBC_PKCS5_PADDING);
+                cipher.init(Cipher.DECRYPT_MODE, skeySpec, new IvParameterSpec(new byte[cipher.getBlockSize()]));
+
+                CipherOutputStream cipherOutputStream = new CipherOutputStream(outputStream, cipher);
+                byte[] buffer = new byte[1024];
+                int r;
+                while ((r = inputStream.read(buffer)) >= 0) {
+                    cipherOutputStream.write(buffer, 0, r);
+                }
+                cipherOutputStream.close();
+            } catch (Exception e) {
+                e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
+            } finally {
+                try {
+                    inputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
+                }
+                try {
+                    outputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();  //To change body of catch statement use File | Settings | File Templates.
+                }
+            }
+        }
     }
 
-    public static class SignatureHelper {
 
-        /**
-         * algorithm: MD5
-         */
-        private static final String ALGORITHM_MD5 = "MD5";
+    /**
+     * 消息摘要工具类，支持MD5和SHA系列算法
+     */
+    public static class MessageDigestHelper {
 
-        /**
-         * algorithm: SHA-1
-         */
-        private static final String ALGORITHM_SHA1 = "SHA-1";
+        public static final String ALGORITHM_MD5 = "MD5";
+        public static final String ALGORITHM_SHA1 = "SHA-1";
+        public static final String ALGORITHM_SHA256 = "SHA-256";
+        public static final String ALGORITHM_SHA384 = "SHA-384";
+        public static final String ALGORITHM_SHA512 = "SHA-512";
 
         /**
          * 对字符串取MD5值
          *
-         * @param strInput 输入字符串
+         * @param data 输入字符串
          * @return
          */
-        public static String encryptStringMD5(String strInput) {
-            return encyptByAlogrithm(strInput, ALGORITHM_MD5);
+        public static String getMD5(String data) {
+            return getMD(data, ALGORITHM_MD5);
         }
 
         /**
@@ -301,11 +773,63 @@ public class CryptoUtils {
          * @param file
          * @return
          */
-        public static String encryptFileMD5(File file) {
+        public static String getMD5(File file) {
+            return getMD(file, ALGORITHM_MD5);
+        }
+
+        /**
+         * 对字符串取SHA-1值
+         *
+         * @param data 输入字符串
+         * @return
+         */
+        public static String getSHA1(String data) {
+            return getMD(data, ALGORITHM_SHA1);
+        }
+
+
+        /**
+         * 取文件SHA1值
+         *
+         * @param file
+         * @return
+         */
+        public static String getSHA1(File file) {
+            return getMD(file, ALGORITHM_SHA1);
+        }
+
+
+        /**
+         * 按输入算法名取摘要签名
+         *
+         * @param data      输入字符串
+         * @param alogrithm 摘要算法名 MD5	,SHA-1,SHA-256,SHA-384,SHA-512
+         * @return
+         */
+        public static String getMD(String data, String alogrithm) {
+            try {
+                MessageDigest md = MessageDigest.getInstance(alogrithm);
+                md.update(data.getBytes("utf-8"));
+                byte temp[] = md.digest();
+                return Hex.encode(temp);
+            } catch (Exception e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
+
+        /**
+         * 按输入算法名取摘要签名
+         *
+         * @param file
+         * @param alogrithm
+         * @return
+         */
+        public static String getMD(File file, String alogrithm) {
             FileInputStream fis = null;
             MessageDigest md;
             try {
-                md = MessageDigest.getInstance(ALGORITHM_MD5);
+                md = MessageDigest.getInstance(alogrithm);
                 fis = new FileInputStream(file);
                 byte[] buffer = new byte[102400];
                 int length;
@@ -325,43 +849,15 @@ public class CryptoUtils {
             }
         }
 
-        /**
-         * 对字符串取SHA-1值
-         *
-         * @param strInput 输入字符串
-         * @return
-         */
-        public static String encryptStringSHA1(String strInput) {
-            return encyptByAlogrithm(strInput, ALGORITHM_SHA1);
-        }
-
-        /**
-         * 按输入算法名取摘要签名
-         *
-         * @param input     输入字符串
-         * @param alogrithm 摘要算法名
-         * @return
-         */
-        private static String encyptByAlogrithm(String input, String alogrithm) {
-            try {
-                MessageDigest md = MessageDigest
-                        .getInstance(alogrithm);
-                md.update(input.getBytes("utf-8"));
-                byte temp[] = md.digest();
-                return Hex.encode(temp);
-            } catch (Exception e) {
-                e.printStackTrace();
-                return null;
-            }
-        }
     }
+
 
     /**
      * HEX字符串与字节码转换工具
      *
      * @author steven-pan
      */
-    public static class Hex {
+    private static class Hex {
 
         /**
          * 将16进制转换为二进制(服务端)
@@ -539,78 +1035,82 @@ public class CryptoUtils {
             output = new String(sb);
             return output;
         }
-
-
-        public static void main(String[] args) {
-            try {
-                System.out.println(encode("asdssdfafasdfsw12345?@!#~#@#%#$%&%^*&&(&*)_()+()+sdfadsfsdfsfasd-*/878ssdfasdfasdfsadfsdafsadfasdfasdf".getBytes("UTF-8")));
-                System.out.println(new String(decode("YXNkc3NkZmFmYXNkZnN3MTIzNDU/QCEjfiNAIyUjJCUmJV4qJiYoJiopXygp KygpK3NkZmFkc2ZzZGZzZmFzZC0qLzg3OHNzZGZhc2RmYXNkZnNhZGZzZGFm c2FkZmFzZGZhc2Rm"), "UTF-8"));
-            } catch (UnsupportedEncodingException e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
-            }
-        }
-
-
     }
+
 
     /**
      * @param args
      * @throws Exception
      */
     public static void main(String[] args) throws Exception {
-        System.out.println("MD5签名编测试：");
-        System.out.println(SignatureHelper.encryptStringMD5("abcv"));
-        System.out.println(SignatureHelper.encryptStringSHA1("abcv"));
+
+        final String source = "夺顶替顶替夺顶替顶替顶替夺顶替夺顶替顶替夺顶替顶替夺顶替顶替夺顶替顶替";// 要加密的字符串
 
 
-        System.out.println("AES加解密测试：");
+        {
+            System.out.println("RSA加解密测试：");
 
-        String password = "c8a9229820ffa315bc6a17a9e43d01a9";
-        String content = "6222001521522152212";
-        // 加密（传输)
-        System.out.println("加密前：" + content);
-        byte[] encryptResult = AESHelper.encrypt(content, password);
+            RSAHelper.setKeySize(1024);
+            //   KeyPair keyPair = RSAHelper.generateKeyPair("pub", "pri");
 
-        // 以HEX进行传输
-        String codedtextb = Base64.encode(encryptResult);// data transfer as text
-        System.out.println("Base64 format:" + codedtextb);
-        encryptResult = Base64.decode(codedtextb);
+            PublicKey publicKey = RSAHelper.loadPublicKeyForFile("pub");
+            PrivateKey privateKey = RSAHelper.loadPrivateKeyForFile("pri");
 
-        // 解密
-        String decryptResultb = AESHelper.decrypt(encryptResult, password);
-        System.out.println("解密后：" + decryptResultb);
+            System.out.println("加密前:" + source);
+
+            byte[] cryptograph = RSAHelper.encryptWithPublicKey(source.getBytes(), publicKey);// 生成的密文
+            System.out.println("加密结果:" + Base64.encode(cryptograph));
+
+            String sign = RSAHelper.sign(cryptograph, privateKey);
+            System.out.println("签名值:" + new String(sign));
+            System.out.println("签名验证结果:" + RSAHelper.verify(cryptograph, publicKey, sign));
+
+            byte[] target = RSAHelper.decryptWithPrivateKey(cryptograph, privateKey);// 解密密文
+            System.out.println("解密后:" + new String(target));
+        }
+
+        System.out.println("====================================");
+
+        {
+            //生成一个动态key
+            String secretKey = CryptoUtils.AESHelper.generateKey();
+            System.out.println("AES动态secretKey ---->" + secretKey);
+
+            //AES加密
+            long start = System.currentTimeMillis();
+            String encryStr = CryptoUtils.AESHelper.encrypt(secretKey, source);
+            long end = System.currentTimeMillis();
+            System.out.println("AES加密耗时---->" + (end - start));
+            System.out.println("AES加密后数据 ---->" + encryStr);
+            System.out.println("AES加密后数据长度 ---->" + encryStr.length());
+
+            //AES解密
+            start = System.currentTimeMillis();
+            String decryStr = CryptoUtils.AESHelper.decrypt(secretKey, encryStr);
+            end = System.currentTimeMillis();
+            System.out.println("AES解密耗时---->" + (end - start));
+            System.out.println("AES解密后数据 ---->" + decryStr);
 
 
-        System.out.println("RSA加解密测试：");
-
-        RSAHelper.generateKeyPair();
-
-        final String source = "73C58BAFE578C59366D8C995CD0B9";// 要加密的字符串
-        System.out.println("加密前:" + source);
-
-        String cryptograph = RSAHelper.encrypt(source);// 生成的密文
-        System.out.println("Base64 format:" + cryptograph);
-
-        String target = RSAHelper.decrypt(cryptograph);// 解密密文
-        System.out.println("解密后:" + target);
+            File sourceFile = new File("学校格式.txt");
+            File outFile1 = new File("en");
+            File outFile2 = new File("de");
+            CryptoUtils.AESHelper.encryptFile(sourceFile, outFile1, secretKey);
+            CryptoUtils.AESHelper.decryptFile(outFile1, outFile2, secretKey);
 
 
-        System.out.println("DESede加解密测试：");
+        }
 
-        final String privateKey = "HG58YZ3CR9HG58YZ3CR9HG58YZ3CR9";
 
-        String text = "hello world!";// origin data
-        System.out.println("加密前:" + text);
-        byte[] codedtext = DESedeHelper.encrypt(text, privateKey);
+        System.out.println("摘要测试：");
+        System.out.println(MessageDigestHelper.getMD5("abcv"));
+        System.out.println(MessageDigestHelper.getSHA1("abcv"));
 
-        String codedtextb1 = Base64.encode(codedtext);// data transfer as text
-        System.out.println("Base64 format:" + codedtextb1);
-        codedtext = Base64.decode(codedtextb1);
+        File sourceFile = new File("学校格式.txt");
 
-        String decodedtext = DESedeHelper.decrypt(codedtext, privateKey);
-        System.out.println("解密后:" + decodedtext); // This correctly shows "hello world!"
-
+        System.out.println(MessageDigestHelper.getMD5(sourceFile));
+        System.out.println(MessageDigestHelper.getSHA1(sourceFile));
+        System.out.println(MessageDigestHelper.getMD(sourceFile, MessageDigestHelper.ALGORITHM_SHA384));
 
     }
 }
