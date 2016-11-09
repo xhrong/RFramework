@@ -1,4 +1,4 @@
-package com.xhr.android.rframework.utils;
+package com.xhr.and.rframework.utils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -15,10 +15,7 @@ import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
-import java.text.SimpleDateFormat;
 import java.util.Arrays;
-import java.util.Date;
-import java.util.Locale;
 
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
@@ -347,7 +344,7 @@ public class CryptoUtils {
          */
         private static String encyptByAlogrithm(String input, String alogrithm) {
             try {
-                java.security.MessageDigest md = java.security.MessageDigest
+                MessageDigest md = MessageDigest
                         .getInstance(alogrithm);
                 md.update(input.getBytes("utf-8"));
                 byte temp[] = md.digest();
