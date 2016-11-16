@@ -1039,6 +1039,39 @@ public class CryptoUtils {
 
 
     /**
+     * 异或加解密码算法
+     */
+    public static class XORHelper {
+
+        public static byte[] encrypt(byte[] bytes, int key) {
+            if (bytes == null) {
+                return null;
+            }
+            int len = bytes.length;
+            //     int key = 0x12;
+            for (int i = 0; i < len; i++) {
+                bytes[i] = (byte) (bytes[i] ^ key);
+                key = bytes[i];
+            }
+            return bytes;
+        }
+
+        public static byte[] decrypt(byte[] bytes, int key) {
+            if (bytes == null) {
+                return null;
+            }
+            int len = bytes.length;
+            //      int key = 0x12;
+            for (int i = len - 1; i > 0; i--) {
+                bytes[i] = (byte) (bytes[i] ^ bytes[i - 1]);
+            }
+            bytes[0] = (byte) (bytes[0] ^ key);
+            return bytes;
+        }
+    }
+
+
+    /**
      * @param args
      * @throws Exception
      */
@@ -1101,16 +1134,22 @@ public class CryptoUtils {
 
         }
 
+        {
+            System.out.println("摘要测试：");
+            System.out.println(MessageDigestHelper.getMD5("abcv"));
+            System.out.println(MessageDigestHelper.getSHA1("abcv"));
 
-        System.out.println("摘要测试：");
-        System.out.println(MessageDigestHelper.getMD5("abcv"));
-        System.out.println(MessageDigestHelper.getSHA1("abcv"));
+            File sourceFile = new File("学校格式.txt");
 
-        File sourceFile = new File("学校格式.txt");
+            System.out.println(MessageDigestHelper.getMD5(sourceFile));
+            System.out.println(MessageDigestHelper.getSHA1(sourceFile));
+            System.out.println(MessageDigestHelper.getMD(sourceFile, MessageDigestHelper.ALGORITHM_SHA384));
+        }
 
-        System.out.println(MessageDigestHelper.getMD5(sourceFile));
-        System.out.println(MessageDigestHelper.getSHA1(sourceFile));
-        System.out.println(MessageDigestHelper.getMD(sourceFile, MessageDigestHelper.ALGORITHM_SHA384));
-
+        {
+            byte[] bytes = XORHelper.encrypt("whoislcj".getBytes(), 10);//加密
+            String str1 = new String(XORHelper.decrypt(bytes, 10));//解密
+            System.out.println(str1);
+        }
     }
 }
