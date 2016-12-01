@@ -1,1 +1,1 @@
-include ':app', ':rframework'
+include ':app', ':rframework', ':javalib'

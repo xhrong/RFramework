@@ -13,4 +13,8 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Hello World!" />
+    <jp.co.cyberagent.android.gpuimage.GPUImageView
+        android:id="@+id/gpuImageView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"></jp.co.cyberagent.android.gpuimage.GPUImageView>
 </RelativeLayout>
