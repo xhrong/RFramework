@@ -99,6 +99,7 @@ public class NetworkUtils {
             int status = p.waitFor();
             if (status == 0) {
                 result = true;
+
             }
         } catch (Exception e) {
             e.printStackTrace();
